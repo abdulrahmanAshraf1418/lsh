@@ -1,284 +1,379 @@
-/***************************************************************************//**
+/******************************************************************************
+ *   Simple Unix Shell Project
+ *   Custom Implementation for Operating Systems Project
+ ******************************************************************************/
 
-  @file         main.c
-
-  @author       Stephen Brennan
-
-  @date         Thursday,  8 January 2015
-
-  @brief        LSH (Libstephen SHell)
-
-*******************************************************************************/
-
-#include <sys/wait.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
-/*
-  Function Declarations for builtin shell commands:
- */
-int lsh_cd(char **args);
-int lsh_help(char **args);
-int lsh_exit(char **args);
+#define BUFFER_SIZE 1024
+#define TOKEN_BUFFER 64
+#define TOKEN_DELIMITERS " \t\r\n\a"
+#define HISTORY_SIZE 50
 
-/*
-  List of builtin commands, followed by their corresponding functions.
- */
-char *builtin_str[] = {
-  "cd",
-  "help",
-  "exit"
+/* ========================= FUNCTION DECLARATIONS ========================= */
+
+int shell_cd(char **args);
+int shell_help(char **args);
+int shell_exit(char **args);
+int shell_pwd(char **args);
+int shell_echo(char **args);
+int shell_history(char **args);
+int shell_export(char **args);
+
+char *read_command_line(void);
+char **split_command(char *line);
+int execute_command(char **args);
+int launch_program(char **args);
+void shell_loop(void);
+
+/* ========================= HISTORY STORAGE ========================= */
+
+char *history_list[HISTORY_SIZE];
+int history_counter = 0;
+
+/* ========================= BUILTIN STRUCT ========================= */
+
+typedef struct {
+  char *command;
+  int (*function)(char **args);
+} builtin_command;
+
+/* ========================= BUILTIN COMMANDS ========================= */
+
+builtin_command commands[] = {
+  {"cd", shell_cd},
+  {"help", shell_help},
+  {"exit", shell_exit},
+  {"pwd", shell_pwd},
+  {"echo", shell_echo},
+  {"history", shell_history},
+  {"export", shell_export}
 };
 
-int (*builtin_func[]) (char **) = {
-  &lsh_cd,
-  &lsh_help,
-  &lsh_exit
-};
-
-int lsh_num_builtins() {
-  return sizeof(builtin_str) / sizeof(char *);
+int number_of_commands() {
+  return sizeof(commands) / sizeof(builtin_command);
 }
 
-/*
-  Builtin function implementations.
-*/
+/* ========================= BUILTIN IMPLEMENTATIONS ========================= */
 
-/**
-   @brief Builtin command: change directory.
-   @param args List of args.  args[0] is "cd".  args[1] is the directory.
-   @return Always returns 1, to continue executing.
- */
-int lsh_cd(char **args)
-{
+/* Change Directory */
+int shell_cd(char **args) {
+
   if (args[1] == NULL) {
-    fprintf(stderr, "lsh: expected argument to \"cd\"\n");
-  } else {
+    fprintf(stderr, "shell: expected directory path\n");
+  }
+  else {
     if (chdir(args[1]) != 0) {
-      perror("lsh");
+      perror("shell");
     }
   }
+
   return 1;
 }
 
-/**
-   @brief Builtin command: print help.
-   @param args List of args.  Not examined.
-   @return Always returns 1, to continue executing.
- */
-int lsh_help(char **args)
-{
-  int i;
-  printf("Stephen Brennan's LSH\n");
-  printf("Type program names and arguments, and hit enter.\n");
-  printf("The following are built in:\n");
+/* Help Command */
+int shell_help(char **args) {
 
-  for (i = 0; i < lsh_num_builtins(); i++) {
-    printf("  %s\n", builtin_str[i]);
+  int i;
+
+  printf("========== Simple Unix Shell ==========\n");
+  printf("Built-in Commands:\n");
+
+  for (i = 0; i < number_of_commands(); i++) {
+    printf(" - %s\n", commands[i].command);
   }
 
-  printf("Use the man command for information on other programs.\n");
+  printf("You can also run Linux system commands.\n");
+
   return 1;
 }
 
-/**
-   @brief Builtin command: exit.
-   @param args List of args.  Not examined.
-   @return Always returns 0, to terminate execution.
- */
-int lsh_exit(char **args)
-{
+/* Exit Command */
+int shell_exit(char **args) {
   return 0;
 }
 
-/**
-  @brief Launch a program and wait for it to terminate.
-  @param args Null terminated list of arguments (including program).
-  @return Always returns 1, to continue execution.
- */
-int lsh_launch(char **args)
-{
+/* Print Current Directory */
+int shell_pwd(char **args) {
+
+  char current_directory[BUFFER_SIZE];
+
+  if (getcwd(current_directory, sizeof(current_directory)) != NULL) {
+    printf("%s\n", current_directory);
+  }
+  else {
+    perror("pwd error");
+  }
+
+  return 1;
+}
+
+/* Echo Command */
+int shell_echo(char **args) {
+
+  int i = 1;
+
+  if (args[1] == NULL) {
+    printf("\n");
+    return 1;
+  }
+
+  while (args[i] != NULL) {
+
+    printf("%s", args[i]);
+
+    if (args[i + 1] != NULL) {
+      printf(" ");
+    }
+
+    i++;
+  }
+
+  printf("\n");
+
+  return 1;
+}
+
+/* Command History */
+int shell_history(char **args) {
+
+  int start = 0;
+
+  if (history_counter > HISTORY_SIZE) {
+    start = history_counter - HISTORY_SIZE;
+  }
+
+  for (int i = start; i < history_counter; i++) {
+
+    printf("%d  %s\n",
+           i + 1,
+           history_list[i % HISTORY_SIZE]);
+  }
+
+  return 1;
+}
+
+/* Export Environment Variable */
+int shell_export(char **args) {
+
+  if (args[1] == NULL) {
+    fprintf(stderr, "shell: expected VARIABLE=VALUE\n");
+    return 1;
+  }
+
+  char *variable = strtok(args[1], "=");
+  char *value = strtok(NULL, "=");
+
+  if (variable == NULL || value == NULL) {
+    fprintf(stderr, "shell: invalid format\n");
+    return 1;
+  }
+
+  if (setenv(variable, value, 1) != 0) {
+    perror("shell");
+  }
+
+  return 1;
+}
+
+/* ========================= PROCESS LAUNCHER ========================= */
+
+int launch_program(char **args) {
+
   pid_t pid;
   int status;
 
   pid = fork();
+
   if (pid == 0) {
-    // Child process
+
+    /* Child Process */
+
     if (execvp(args[0], args) == -1) {
-      perror("lsh");
+      perror("shell");
     }
+
     exit(EXIT_FAILURE);
-  } else if (pid < 0) {
-    // Error forking
-    perror("lsh");
-  } else {
-    // Parent process
+  }
+
+  else if (pid < 0) {
+
+    /* Fork Failed */
+
+    perror("shell");
+  }
+
+  else {
+
+    /* Parent Process */
+
     do {
       waitpid(pid, &status, WUNTRACED);
-    } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+    }
+    while (!WIFEXITED(status) && !WIFSIGNALED(status));
   }
 
   return 1;
 }
 
-/**
-   @brief Execute shell built-in or launch program.
-   @param args Null terminated list of arguments.
-   @return 1 if the shell should continue running, 0 if it should terminate
- */
-int lsh_execute(char **args)
-{
+/* ========================= EXECUTE COMMAND ========================= */
+
+int execute_command(char **args) {
+
   int i;
 
   if (args[0] == NULL) {
-    // An empty command was entered.
     return 1;
   }
 
-  for (i = 0; i < lsh_num_builtins(); i++) {
-    if (strcmp(args[0], builtin_str[i]) == 0) {
-      return (*builtin_func[i])(args);
+  for (i = 0; i < number_of_commands(); i++) {
+
+    if (strcmp(args[0], commands[i].command) == 0) {
+      return commands[i].function(args);
     }
   }
 
-  return lsh_launch(args);
+  return launch_program(args);
 }
 
-/**
-   @brief Read a line of input from stdin.
-   @return The line from stdin.
- */
-char *lsh_read_line(void)
-{
-#ifdef LSH_USE_STD_GETLINE
-  char *line = NULL;
-  ssize_t bufsize = 0; // have getline allocate a buffer for us
-  if (getline(&line, &bufsize, stdin) == -1) {
-    if (feof(stdin)) {
-      exit(EXIT_SUCCESS);  // We received an EOF
-    } else  {
-      perror("lsh: getline\n");
-      exit(EXIT_FAILURE);
-    }
-  }
-  return line;
-#else
-#define LSH_RL_BUFSIZE 1024
-  int bufsize = LSH_RL_BUFSIZE;
+/* ========================= READ INPUT ========================= */
+
+char *read_command_line(void) {
+
   int position = 0;
-  char *buffer = malloc(sizeof(char) * bufsize);
-  int c;
+  int buffer_size = BUFFER_SIZE;
+
+  char *buffer = malloc(sizeof(char) * buffer_size);
+
+  int character;
 
   if (!buffer) {
-    fprintf(stderr, "lsh: allocation error\n");
+    fprintf(stderr, "allocation error\n");
     exit(EXIT_FAILURE);
   }
 
   while (1) {
-    // Read a character
-    c = getchar();
 
-    if (c == EOF) {
+    character = getchar();
+
+    if (character == EOF) {
       exit(EXIT_SUCCESS);
-    } else if (c == '\n') {
+    }
+
+    else if (character == '\n') {
       buffer[position] = '\0';
       return buffer;
-    } else {
-      buffer[position] = c;
     }
+
+    else {
+      buffer[position] = character;
+    }
+
     position++;
 
-    // If we have exceeded the buffer, reallocate.
-    if (position >= bufsize) {
-      bufsize += LSH_RL_BUFSIZE;
-      buffer = realloc(buffer, bufsize);
+    if (position >= buffer_size) {
+
+      buffer_size += BUFFER_SIZE;
+
+      buffer = realloc(buffer, buffer_size);
+
       if (!buffer) {
-        fprintf(stderr, "lsh: allocation error\n");
+        fprintf(stderr, "allocation error\n");
         exit(EXIT_FAILURE);
       }
     }
   }
-#endif
 }
 
-#define LSH_TOK_BUFSIZE 64
-#define LSH_TOK_DELIM " \t\r\n\a"
-/**
-   @brief Split a line into tokens (very naively).
-   @param line The line.
-   @return Null-terminated array of tokens.
- */
-char **lsh_split_line(char *line)
-{
-  int bufsize = LSH_TOK_BUFSIZE, position = 0;
-  char **tokens = malloc(bufsize * sizeof(char*));
-  char *token, **tokens_backup;
+/* ========================= TOKENIZE INPUT ========================= */
+
+char **split_command(char *line) {
+
+  int buffer_size = TOKEN_BUFFER;
+  int position = 0;
+
+  char **tokens = malloc(buffer_size * sizeof(char*));
+
+  char *token;
 
   if (!tokens) {
-    fprintf(stderr, "lsh: allocation error\n");
+    fprintf(stderr, "allocation error\n");
     exit(EXIT_FAILURE);
   }
 
-  token = strtok(line, LSH_TOK_DELIM);
+  token = strtok(line, TOKEN_DELIMITERS);
+
   while (token != NULL) {
+
     tokens[position] = token;
     position++;
 
-    if (position >= bufsize) {
-      bufsize += LSH_TOK_BUFSIZE;
-      tokens_backup = tokens;
-      tokens = realloc(tokens, bufsize * sizeof(char*));
+    if (position >= buffer_size) {
+
+      buffer_size += TOKEN_BUFFER;
+
+      tokens = realloc(tokens, buffer_size * sizeof(char*));
+
       if (!tokens) {
-		free(tokens_backup);
-        fprintf(stderr, "lsh: allocation error\n");
+        fprintf(stderr, "allocation error\n");
         exit(EXIT_FAILURE);
       }
     }
 
-    token = strtok(NULL, LSH_TOK_DELIM);
+    token = strtok(NULL, TOKEN_DELIMITERS);
   }
+
   tokens[position] = NULL;
+
   return tokens;
 }
 
-/**
-   @brief Loop getting input and executing it.
- */
-void lsh_loop(void)
-{
+/* ========================= MAIN SHELL LOOP ========================= */
+
+void shell_loop(void) {
+
   char *line;
   char **args;
+
   int status;
 
   do {
-    printf("> ");
-    line = lsh_read_line();
-    args = lsh_split_line(line);
-    status = lsh_execute(args);
+
+    printf("myshell$ ");
+
+    line = read_command_line();
+
+    /* Save History */
+
+    if (strlen(line) > 0) {
+
+      history_list[history_counter % HISTORY_SIZE] = strdup(line);
+
+      history_counter++;
+    }
+
+    args = split_command(line);
+
+    status = execute_command(args);
 
     free(line);
     free(args);
+
   } while (status);
 }
 
-/**
-   @brief Main entry point.
-   @param argc Argument count.
-   @param argv Argument vector.
-   @return status code
- */
-int main(int argc, char **argv)
-{
-  // Load config files, if any.
+/* ========================= MAIN FUNCTION ========================= */
 
-  // Run command loop.
-  lsh_loop();
+int main(int argc, char **argv) {
 
-  // Perform any shutdown/cleanup.
+  printf("Starting Simple Unix Shell...\n");
+
+  shell_loop();
 
   return EXIT_SUCCESS;
 }
-
